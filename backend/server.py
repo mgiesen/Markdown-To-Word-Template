@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, after_this_request
 from flask_cors import CORS
 import pypandoc
 import os
@@ -10,28 +10,42 @@ import shutil
 import glob
 from werkzeug.utils import secure_filename
 
+# --- Pfade robust relativ zur Datei ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATES_DIR = os.path.join(BASE_DIR, 'templates')
+USER_TEMPLATES_DIR = os.path.join(BASE_DIR, 'user-templates')
+PANDOC_DIR = os.path.join(BASE_DIR, 'pandoc')
+
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
+os.makedirs(USER_TEMPLATES_DIR, exist_ok=True)
+os.makedirs(PANDOC_DIR, exist_ok=True)
+
+# Pandoc-Binary & Env für pypandoc
+pandoc_binary = os.path.join(PANDOC_DIR, 'pandoc' + ('.exe' if sys.platform == 'win32' else ''))
+os.environ['PYPANDOC_PANDOC'] = pandoc_binary  # von pypandoc ausgewertet
+
 app = Flask(__name__)
 CORS(app)
 
-# Configure maximum file upload size
+# Max Upload (25 MB)
 app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
 
-# Configure Pandoc path
-pandoc_path = os.path.join(os.getcwd(), 'pandoc')
-if not os.path.exists(pandoc_path):
-    os.makedirs(pandoc_path)
-
-if sys.platform == "win32":
-    pandoc_binary = os.path.join(pandoc_path, 'pandoc.exe')
-else:
-    pandoc_binary = os.path.join(pandoc_path, 'pandoc')
-
-os.environ['PYPANDOC_PANDOC'] = pandoc_binary
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    """Health check endpoint um zu prüfen ob die API online ist"""
-    return jsonify({"status": "ok", "message": "API is online"}), 200
+    """Health check endpoint"""
+    exists = os.path.isfile(pandoc_binary)
+    exec_ok = exists and os.access(pandoc_binary, os.X_OK)
+    return jsonify({
+        "status": "ok",
+        "message": "API is online",
+        "pandoc": {
+            "path": pandoc_binary,
+            "exists": exists,
+            "executable": exec_ok
+        }
+    }), 200
+
 
 @app.route('/api/upload-template', methods=['POST'])
 def upload_template():
@@ -39,34 +53,35 @@ def upload_template():
     try:
         if 'template' not in request.files:
             return jsonify({"error": "Keine Datei ausgewählt"}), 400
-        
+
         file = request.files['template']
         if file.filename == '':
             return jsonify({"error": "Keine Datei ausgewählt"}), 400
-        
-        # Validate file extension
+
         if not file.filename.lower().endswith(('.docx', '.doc')):
             return jsonify({"error": "Nur .docx und .doc Dateien sind erlaubt"}), 400
-        
-        # Clear and recreate user templates directory
-        user_templates_dir = 'user-templates'
-        if os.path.exists(user_templates_dir):
-            shutil.rmtree(user_templates_dir)
-        os.makedirs(user_templates_dir, exist_ok=True)
+
+        # Ordner leeren & neu anlegen (genau ein aktives User-Template)
+        if os.path.exists(USER_TEMPLATES_DIR):
+            shutil.rmtree(USER_TEMPLATES_DIR)
+        os.makedirs(USER_TEMPLATES_DIR, exist_ok=True)
+
         filename = secure_filename(file.filename)
-        filepath = os.path.join(user_templates_dir, filename)
+        filepath = os.path.join(USER_TEMPLATES_DIR, filename)
         file.save(filepath)
-        
+
         return jsonify({"message": "Template erfolgreich hochgeladen", "filename": filename}), 200
-        
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/templates', methods=['GET'])
 def get_templates():
     """Gibt die verfügbaren Templates zurück"""
     try:
-        with open(os.path.join('templates', 'index.json'), 'r', encoding='utf-8') as f:
+        index_path = os.path.join(TEMPLATES_DIR, 'index.json')
+        with open(index_path, 'r', encoding='utf-8') as f:
             templates = json.load(f)
         return jsonify(templates)
     except FileNotFoundError:
@@ -74,92 +89,97 @@ def get_templates():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 @app.route('/api/convert', methods=['POST'])
 def convert_markdown():
     """Konvertiert Markdown in Word/OneNote Format"""
     try:
-        data = request.json
+        data = request.json or {}
         markdown_content = data.get('markdown', '')
         template_id = data.get('template_id', '')
-        
+
         if not markdown_content:
             return jsonify({"error": "Kein Markdown-Inhalt gefunden"}), 400
-        
         if not template_id:
             return jsonify({"error": "Keine Template-ID angegeben"}), 400
-        
-        # Handle user template or standard template
+
+        # Pandoc vorhanden & ausführbar?
+        if not os.path.isfile(pandoc_binary):
+            return jsonify({"error": f"Pandoc-Binary nicht gefunden: {pandoc_binary}"}), 500
+        if not os.access(pandoc_binary, os.X_OK):
+            try:
+                os.chmod(pandoc_binary, 0o755)
+            except Exception:
+                return jsonify({"error": f"Pandoc-Binary ist nicht ausführbar: {pandoc_binary}"}), 500
+
+        # Template bestimmen
         if template_id == '__custom__':
-            user_templates_dir = 'user-templates'
-            if not os.path.exists(user_templates_dir):
+            files = glob.glob(os.path.join(USER_TEMPLATES_DIR, '*.docx')) or \
+                    glob.glob(os.path.join(USER_TEMPLATES_DIR, '*.doc'))
+            if not files:
                 return jsonify({"error": "Kein benutzerdefiniertes Template gefunden"}), 404
-            
-            # Find first available template file
-            template_files = glob.glob(os.path.join(user_templates_dir, '*.docx'))
-            if not template_files:
-                template_files = glob.glob(os.path.join(user_templates_dir, '*.doc'))
-            
-            if not template_files:
-                return jsonify({"error": "Kein benutzerdefiniertes Template gefunden"}), 404
-            
-            template_file = template_files[0]
+            template_file = files[0]
             template_description = "Benutzerdefiniertes Template"
         else:
-            # Load standard template configuration
-            with open(os.path.join('templates', 'index.json'), 'r', encoding='utf-8') as f:
+            index_path = os.path.join(TEMPLATES_DIR, 'index.json')
+            with open(index_path, 'r', encoding='utf-8') as f:
                 templates = json.load(f)
-            
-            # Find template by filename (without extension)
+
             template_info = None
-            for template in templates:
-                template_id_from_filename = os.path.splitext(template['filename'])[0]
+            for t in templates:
+                template_id_from_filename = os.path.splitext(t['filename'])[0]
                 if template_id_from_filename == template_id:
-                    template_info = template
+                    template_info = t
                     break
-            
+
             if not template_info:
                 return jsonify({"error": "Template nicht gefunden"}), 404
-            
-            template_file = os.path.join('templates', template_info['filename'])
-            template_description = template_info['description']
-        
-        # Create temporary files for conversion
+
+            template_file = os.path.join(TEMPLATES_DIR, template_info['filename'])
+            if not os.path.isfile(template_file):
+                return jsonify({"error": f"Template-Datei fehlt: {template_file}"}), 404
+            template_description = template_info.get('description', template_id)
+
+        # Temp-Dateien
         temp_dir = tempfile.gettempdir()
         unique_id = str(uuid.uuid4())
         input_file = os.path.join(temp_dir, f"input_{unique_id}.md")
-        
-        # Write markdown content to temporary file
+        output_file = os.path.join(temp_dir, f"output_{unique_id}.docx")
+
+        # Markdown schreiben
         with open(input_file, 'w', encoding='utf-8') as f:
             f.write(markdown_content)
-        
-        # Configure output file and pandoc parameters
-        output_file = os.path.join(temp_dir, f"output_{unique_id}.docx")
-        pandoc_format = 'docx'
+
+        # Cleanup nach Response
+        @after_this_request
+        def _cleanup_files(response):
+            for p in (input_file, output_file):
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+            return response
+
+        # Konvertieren (mit Reference-Doc)
         extra_args = ['--reference-doc', template_file]
-        
-        # Convert markdown to docx using template
         pypandoc.convert_file(
-            input_file, 
-            pandoc_format, 
-            outputfile=output_file, 
+            input_file,
+            'docx',
+            outputfile=output_file,
             extra_args=extra_args
         )
-        
-        # Clean up temporary input file
-        os.remove(input_file)
+
         return send_file(
-            output_file, 
-            as_attachment=True, 
+            output_file,
+            as_attachment=True,
             download_name=f"{template_description}.docx",
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         )
-        
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 if __name__ == '__main__':
-    # Ensure templates directory exists
-    if not os.path.exists('templates'):
-        os.makedirs('templates')
-    
     app.run(host='0.0.0.0', port=8081, debug=True)
