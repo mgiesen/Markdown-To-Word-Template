@@ -41,22 +41,33 @@ Die App benötigt Pandoc für die Markdown→Word-Konvertierung. Lade die entspr
 2. Lade `pandoc-[version]-macOS.zip` herunter  
 3. Extrahiere `pandoc` nach `backend/pandoc/pandoc`
 
-### 3. Backend starten
+### 3. Virtual Environment einrichten (empfohlen)
 ```bash
 cd backend
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+# Linux/macOS  
+source venv/bin/activate
+```
+
+### 4. Backend starten
+```bash
 pip install -r requirements.txt
 python server.py
 ```
 API läuft auf: http://localhost:8081
 
-### 4. Frontend starten
+### 5. Frontend starten
 ```bash
 cd backend
 python webserver.py
 ```
 Frontend läuft auf: http://localhost:5500
 
-### 5. Verwenden
+### 6. Verwenden
 1. Öffne http://localhost:5500
 2. Gib Markdown-Content ein
 3. Wähle ein Template oder lade eigenes hoch
