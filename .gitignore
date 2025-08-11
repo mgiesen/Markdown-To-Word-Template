@@ -1,0 +1,6 @@
+.claude
+.venv
+backend/user-templates/*
+!backend/user-templates/.gitkeep
+backend/pandoc/*
+!backend/pandoc/.gitkeep
