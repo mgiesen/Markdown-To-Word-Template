@@ -38,7 +38,7 @@ class MarkdownConverter {
             this.templates = templates;
             this.populateTemplateSelect(templates);
         } catch (error) {
-            this.showStatus('Fehler beim Laden der Templates: ' + error.message, 'error');
+            this.showStatus('Fehler beim Laden der Templates', 'error');
             console.error('Fehler beim Laden der Templates:', error);
         }
     }
