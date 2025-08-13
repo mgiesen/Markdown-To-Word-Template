@@ -17,6 +17,7 @@ class MarkdownConverter {
         this.convertBtn.disabled = true;
         this.userTemplateFile = null;
         this.templates = [];
+        this.backendReachable = false;
         
         this.init();
     }
@@ -36,9 +37,11 @@ class MarkdownConverter {
             
             const templates = await response.json();
             this.templates = templates;
+            this.backendReachable = true;
             this.populateTemplateSelect(templates);
         } catch (error) {
-            this.showStatus('Fehler beim Laden der Templates', 'error');
+            this.backendReachable = false;
+            this.showStatus('Backend nicht erreichbar - Templates können nicht geladen werden', 'error');
             console.error('Fehler beim Laden der Templates:', error);
         }
     }
@@ -198,17 +201,21 @@ class MarkdownConverter {
     }
 
     updateButtonState() {
-        const hasMarkdown = this.markdownInput.value.trim().length > 0;
         const hasTemplate = this.templateSelect.value.length > 0 && !this.templateSelect.disabled;
         
-        this.convertBtn.disabled = !(hasMarkdown && hasTemplate);
+        this.convertBtn.disabled = !(hasTemplate && this.backendReachable);
     }
 
     async handleConvert() {
         if (this.convertBtn.disabled) return;
         
-        const markdown = this.markdownInput.value.trim();
+        let markdown = this.markdownInput.value.trim();
         const templateId = this.templateSelect.value;
+        
+        // If no content, use markdownExample variable
+        if (!markdown) {
+            markdown = window.markdownExample || '';
+        }
         
         if (!markdown || !templateId) {
             this.showStatus('Bitte gebe Markdown-Text ein und wähle ein Template aus.', 'error');
